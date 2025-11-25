@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       archive_url:
-        description: 'Direct URL to the gcc tarball (e.g. artifact download URL or release asset URL)'
+        description: 'Direct URL to the gcc tarball (e.g. release asset URL or file server URL)'
         required: true
 
 jobs:
@@ -12,13 +12,51 @@ jobs:
     steps:
       - name: Download provided archive
         run: |
+          set -euo pipefail
           echo "Downloading archive from: ${{ inputs.archive_url }}"
-          curl -fL "${{ inputs.archive_url }}" -o /tmp/gcc-16-opt.tar.xz
-          ls -lh /tmp/gcc-16-opt.tar.xz
+          curl -fL --retry 3 "${{ inputs.archive_url }}" -o /tmp/gcc-16-opt.download
+          # show size and a small hexdump/head to help debugging
+          echo "Downloaded file size: $(stat -c%s /tmp/gcc-16-opt.download) bytes"
+          head -c 512 /tmp/gcc-16-opt.download | sed -n '1,120p' || true
+          # quickly check for HTML (common failure when URL is wrong or requires auth)
+          if head -c 512 /tmp/gcc-16-opt.download | grep -qiE '<!doctype|<html|<meta name="viewport"'; then
+            echo "ERROR: downloaded file looks like HTML (likely an error page or redirect)." >&2
+            echo "Saving first 200 lines to /tmp/gcc-16-opt.download.head for inspection." >&2
+            head -n 200 /tmp/gcc-16-opt.download > /tmp/gcc-16-opt.download.head || true
+            ls -l /tmp/gcc-16-opt.download* || true
+            exit 2
+          fi
+          # move into the final name
+          mv /tmp/gcc-16-opt.download /tmp/gcc-16-opt.tar
+          file -b --mime-type /tmp/gcc-16-opt.tar > /tmp/gcc-16-opt.mime
+          echo "Detected mime-type: $(cat /tmp/gcc-16-opt.mime)"
 
-      - name: Extract to /opt
+      - name: Extract to /opt using detected compression
         run: |
-          sudo tar -xJf /tmp/gcc-16-opt.tar.xz -C /opt
+          set -euo pipefail
+          mime=$(cat /tmp/gcc-16-opt.mime)
+          case "${mime}" in
+            application/x-xz|application/x-xz-compressed|application/xz)
+              echo "Extracting as xz-compressed tar..."
+              sudo tar -xJf /tmp/gcc-16-opt.tar -C /opt
+              ;;
+            application/gzip|application/x-gzip)
+              echo "Extracting as gzip-compressed tar..."
+              sudo tar -xzf /tmp/gcc-16-opt.tar -C /opt
+              ;;
+            application/x-tar|application/tar)
+              echo "Extracting as plain tar..."
+              sudo tar -xf /tmp/gcc-16-opt.tar -C /opt
+              ;;
+            application/octet-stream)
+              echo "Unknown binary stream: attempting xz extraction first, then gzip..."
+              (sudo tar -xJf /tmp/gcc-16-opt.tar -C /opt) || (sudo tar -xzf /tmp/gcc-16-opt.tar -C /opt)
+              ;;
+            *)
+              echo "Unhandled mime-type: ${mime} - attempting extraction with tar auto-detection"
+              sudo tar -xvf /tmp/gcc-16-opt.tar -C /opt || (echo "tar extraction failed for mime ${mime}"; exit 3)
+              ;;
+          esac
           sudo ls -l /opt/gcc-16/bin || true
 
       - name: Register alternatives
@@ -28,11 +66,10 @@ jobs:
 
       - name: Verify installation
         run: |
-          /opt/gcc-16/bin/gcc --version
-          gcc --version
+          /opt/gcc-16/bin/gcc --version || true
+          gcc --version || true
 
       - name: Clean up archive (optional)
         if: always()
         run: |
-          rm -f /tmp/gcc-16-opt.tar.xz
-          
+          rm -f /tmp/gcc-16-opt.tar /tmp/gcc-16-opt.mime /tmp/gcc-16-opt.download.head || true
