@@ -1,0 +1,38 @@
+name: install-gcc-16
+on:
+  workflow_dispatch:
+    inputs:
+      archive_url:
+        description: 'Direct URL to the gcc tarball (e.g. artifact download URL or release asset URL)'
+        required: true
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download provided archive
+        run: |
+          echo "Downloading archive from: ${{ inputs.archive_url }}"
+          curl -fL "${{ inputs.archive_url }}" -o /tmp/gcc-16-opt.tar.xz
+          ls -lh /tmp/gcc-16-opt.tar.xz
+
+      - name: Extract to /opt
+        run: |
+          sudo tar -xJf /tmp/gcc-16-opt.tar.xz -C /opt
+          sudo ls -l /opt/gcc-16/bin || true
+
+      - name: Register alternatives
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc-16 gcc-16 /opt/gcc-16/bin/gcc 160 --slave /usr/bin/g++-16 g++-16 /opt/gcc-16/bin/g++
+          sudo update-alternatives --install /usr/bin/gcc gcc /opt/gcc-16/bin/gcc 160 --slave /usr/bin/g++ g++ /opt/gcc-16/bin/g++
+
+      - name: Verify installation
+        run: |
+          /opt/gcc-16/bin/gcc --version
+          gcc --version
+
+      - name: Clean up archive (optional)
+        if: always()
+        run: |
+          rm -f /tmp/gcc-16-opt.tar.xz
+          
